@@ -282,6 +282,7 @@ class Connection:
     :param turn_transport: The transport for TURN server, `"udp"` or `"tcp"`.
     :param use_ipv4: Whether to use IPv4 candidates.
     :param use_ipv6: Whether to use IPv6 candidates.
+    :param transport_policy Transport policy, `"all"` or `"relay"`.
     """
 
     def __init__(
@@ -296,6 +297,7 @@ class Connection:
         turn_transport: str = "udp",
         use_ipv4: bool = True,
         use_ipv6: bool = True,
+        transport_policy: str = "all",
     ) -> None:
         self.ice_controlling = ice_controlling
         #: Local username, automatically set to a random value.
@@ -340,6 +342,7 @@ class Connection:
         self._tie_breaker = secrets.randbits(64)
         self._use_ipv4 = use_ipv4
         self._use_ipv6 = use_ipv6
+        self._transport_policy = transport_policy
 
     @property
     def local_candidates(self) -> List[Candidate]:
@@ -418,9 +421,12 @@ class Connection:
         """
         if not self._local_candidates_start:
             self._local_candidates_start = True
-            addresses = get_host_addresses(
-                use_ipv4=self._use_ipv4, use_ipv6=self._use_ipv6
-            )
+            if self._transport_policy == "all":
+                addresses = get_host_addresses(
+                    use_ipv4=self._use_ipv4, use_ipv6=self._use_ipv6
+                )
+            else:
+                addresses = []
             coros = [
                 self.get_component_candidates(component=component, addresses=addresses)
                 for component in self._components
