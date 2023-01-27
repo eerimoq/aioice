@@ -210,7 +210,7 @@ class StunProtocol(asyncio.DatagramProtocol):
 
         try:
             message = stun.parse_message(data)
-            self.__log_debug("< %s %s", addr, message)
+            self.__log_debug("rx %s %s", addr, message)
         except ValueError:
             self.receiver.data_received(data, self.local_candidate.component)
             return
@@ -264,11 +264,11 @@ class StunProtocol(asyncio.DatagramProtocol):
         """
         Send a STUN message.
         """
-        self.__log_debug("> %s %s", addr, message)
+        self.__log_debug("tx %s %s", addr, message)
         self.transport.sendto(bytes(message), addr)
 
     def __log_debug(self, msg: str, *args) -> None:
-        logger.debug("%s %s " + msg, self.receiver, self, *args)
+        logger.debug("stun/dgram %s %s " + msg, self.receiver, self, *args)
 
     def __repr__(self) -> str:
         return "protocol(%s)" % self.id
@@ -682,7 +682,9 @@ class Connection:
                         CandidatePair.State.WAITING,
                         CandidatePair.State.FROZEN,
                     ]:
-                        self.check_state(p, CandidatePair.State.FAILED)
+                        self.check_state(p,
+                                         CandidatePair.State.FAILED,
+                                         'remove all frozen and waiting')
 
             # Once there is at least one nominated pair in the valid list for
             # every component of at least one media stream and the state of the
@@ -700,7 +702,9 @@ class Connection:
                     p.local_candidate.foundation == pair.local_candidate.foundation
                     and p.state == CandidatePair.State.FROZEN
                 ):
-                    self.check_state(p, CandidatePair.State.WAITING)
+                    self.check_state(p,
+                                     CandidatePair.State.WAITING,
+                                     'updating pair states')
 
         for p in self._check_list:
             if p.state not in [
@@ -758,7 +762,7 @@ class Connection:
 
         # triggered check
         if pair.state in [CandidatePair.State.WAITING, CandidatePair.State.FAILED]:
-            self.try_check_start(pair)
+            self.try_check_start(pair, 'triggered by incoming')
 
         # 7.2.1.5. Updating the Nominated Flag
         if "USE-CANDIDATE" in message.attributes and not self.ice_controlling:
@@ -772,13 +776,13 @@ class Connection:
         # find the highest-priority pair that is in the waiting state
         for pair in self._check_list:
             if pair.state == CandidatePair.State.WAITING:
-                self.try_check_start(pair)
+                self.try_check_start(pair, 'highest priority waiting')
                 return True
 
         # find the highest-priority pair that is in the frozen state
         for pair in self._check_list:
             if pair.state == CandidatePair.State.FROZEN:
-                self.try_check_start(pair)
+                self.try_check_start(pair, 'highest priority frozen')
                 return True
 
         # if we expect more candidates, keep going
@@ -787,15 +791,15 @@ class Connection:
 
         return False
 
-    def try_check_start(self, pair):
+    def try_check_start(self, pair, reason):
         if pair.handle is None:
-            pair.handle = asyncio.ensure_future(self.check_start(pair))
+            pair.handle = asyncio.ensure_future(self.check_start(pair, reason))
 
-    async def check_start(self, pair: CandidatePair) -> None:
+    async def check_start(self, pair: CandidatePair, reason: str) -> None:
         """
         Starts a check.
         """
-        self.check_state(pair, CandidatePair.State.IN_PROGRESS)
+        self.check_state(pair, CandidatePair.State.IN_PROGRESS, reason)
 
         nominate = self.ice_controlling and not self.remote_is_lite
         request = self.build_request(pair, nominate=nominate)
@@ -817,14 +821,16 @@ class Connection:
                     self.switch_role(ice_controlling=True)
                 return await self.check_start(pair)
             else:
-                self.check_state(pair, CandidatePair.State.FAILED)
+                self.check_state(pair, CandidatePair.State.FAILED, 'transaction error')
                 self.check_complete(pair)
                 return
 
         # check remote address matches
         if addr != pair.remote_addr:
             self.__log_info("Check %s failed : source address mismatch", pair)
-            self.check_state(pair, CandidatePair.State.FAILED)
+            self.check_state(pair,
+                             CandidatePair.State.FAILED,
+                             'remote address misamtch')
             self.check_complete(pair)
             return
 
@@ -845,18 +851,23 @@ class Connection:
                 )
             except stun.TransactionError:
                 self.__log_info("Check %s failed : could not nominate pair", pair)
-                self.check_state(pair, CandidatePair.State.FAILED)
+                self.check_state(pair,
+                                 CandidatePair.State.FAILED,
+                                 'could not nominate pair')
                 self.check_complete(pair)
                 return
             pair.nominated = True
-        self.check_state(pair, CandidatePair.State.SUCCEEDED)
+        self.check_state(pair, CandidatePair.State.SUCCEEDED, 'success')
         self.check_complete(pair)
 
-    def check_state(self, pair: CandidatePair, state: CandidatePair.State) -> None:
+    def check_state(self,
+                    pair: CandidatePair,
+                    state: CandidatePair.State,
+                    reason: str) -> None:
         """
         Updates the state of a check.
         """
-        self.__log_info("Check %s %s -> %s", pair, pair.state, state)
+        self.__log_info("Check %s %s -> %s (%s)", pair, pair.state, state, reason)
         pair.state = state
 
     def _emit_event(self, event: ConnectionEvent) -> None:
@@ -1096,7 +1107,9 @@ class Connection:
         if first_pair is None:
             return
         if first_pair.state == CandidatePair.State.FROZEN:
-            self.check_state(first_pair, CandidatePair.State.WAITING)
+            self.check_state(first_pair,
+                             CandidatePair.State.WAITING,
+                             'unfreeze initial')
 
         # unfreeze pairs with same component but different foundations
         seen_foundations = set(first_pair.local_candidate.foundation)
@@ -1106,7 +1119,9 @@ class Connection:
                 and pair.local_candidate.foundation not in seen_foundations
                 and pair.state == CandidatePair.State.FROZEN
             ):
-                self.check_state(pair, CandidatePair.State.WAITING)
+                self.check_state(pair,
+                                 CandidatePair.State.WAITING,
+                                 'unfreeze same componnet')
                 seen_foundations.add(pair.local_candidate.foundation)
 
     def __log_info(self, msg: str, *args) -> None:

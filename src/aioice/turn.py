@@ -161,7 +161,7 @@ class TurnClientMixin:
 
         try:
             message = stun.parse_message(data)
-            logger.debug("%s < %s %s", self, addr, message)
+            logger.debug("%s rx %s %s", self, addr, message)
         except ValueError:
             return
 
@@ -311,7 +311,7 @@ class TurnClientMixin:
         """
         Send a STUN message to the TURN server.
         """
-        logger.debug("%s > %s %s", self, addr, message)
+        logger.debug("%s tx %s %s", self, addr, message)
         self._send(bytes(message))
 
     def __add_authentication(self, request: stun.Message) -> None:
